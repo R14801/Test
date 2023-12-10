@@ -1,0 +1,351 @@
+#!/bin/bash
+# OSSEC Updater Modifed
+# Name: oum
+# Copyright Atomicorp 2020
+# Summary:  OSSEC Updater Modified Installer
+# License: Opensource
+
+# Globals
+ARCH=`uname -i`
+GET=/usr/bin/wget
+ROOT_UID="0"
+LOG=/root/oum-install.log
+DATE=$(date +%Y%m%d-%H:%M)
+INSTALLER_VER=2.1
+ATOMIC_VER="5.0.1"
+VERSION="1.0-21"
+SERVER=updates.atomicorp.com
+ARCH=`uname -i`
+
+
+
+#Check if run as root
+# For environments that do not use bash.
+if [ ! "$UID" ]; then
+        UID=`id -u`
+fi
+
+if [ "$UID" -ne "$ROOT_UID" ] ; then
+        echo "ERROR: You must be root to run this program."
+        exit 1
+fi
+
+echo "OUM install begin: $DATE" >> $LOG
+
+
+echo
+echo "OSSEC Updater Modifed (OUM) Installer (v$INSTALLER_VER)"
+echo "Further Documentation is available at: "
+echo "https://ossec.net"
+echo
+echo "Support: https://ossec.net"
+
+
+
+# Input validation function
+# check_input <msg> <valid responses regex> <default>
+# if <default> is passed on as null, then there is no default
+# Example: check_input  "Some question (yes/no) " "yes|no"  "yes"
+check_input () {
+  message=$1
+  validate=$2
+  default=$3
+
+  while [ $? -ne 1 ]; do
+    echo -n "$message "
+    read INPUTTEXT < /dev/tty
+    if [ "$INPUTTEXT" == "" -a "$default" != "" ]; then
+      INPUTTEXT=$default
+      return 1
+    fi
+    echo $INPUTTEXT | egrep -q "$validate" && return 1
+    echo "Invalid input"
+  done
+
+}
+
+#
+if [ -f /var/awp/bin/awp ] || [ -f /var/asl/bin/asl ]; then
+	echo "Atomic OSSEC is installed."
+	echo "  OUM is not necessary in this environment"
+	echo "exiting..."
+	exit 1
+fi
+
+
+if [ -f /etc/redhat-release ]; then
+  RELEASE=/etc/redhat-release
+elif [ -f /etc/os-release ]; then
+  RELEASE=/etc/os-release
+elif [ -f /etc/openvz-release ]; then
+  RELEASE=/etc/openvz-release
+elif [ -f /etc/virtuozzo-release ]; then
+  RELEASE_FILE=/etc/virtuozzo-release
+elif [ -f /etc/SuSE-release ]; then
+  RELEASE=/etc/SuSE-release
+elif [ -f /etc/lsb-release ]; then
+  RELEASE=/etc/lsb-release
+elif [ -f /etc/debian_version ]; then
+  RELEASE=/etc/debian_version
+else
+  echo "Error: Unable to identify operating system"
+  exit 1
+fi
+
+PKG=rpm
+if egrep -q "^Fedora|release 3|release 4" $RELEASE ; then
+  cat /etc/redhat-release
+  echo "This platform is no longer supported..." | tee -a $LOG
+  echo "Exiting..."
+  exit 1
+elif egrep -q "release 5|release 2011" $RELEASE ; then
+  DIST="el5"
+  DIR=centos/5
+elif egrep -q "release 6|release 2012" $RELEASE ; then
+  DIST="el6"
+  DIR=centos/6
+elif egrep -q "release 7" $RELEASE ; then
+  DIST="el7"
+  DIR=centos/7
+elif egrep -q "release 8" $RELEASE ; then
+  DIST="el8"
+  DIR=centos/8
+elif egrep -q "openSUSE 12" $RELEASE ; then
+  DIST="suse12"
+  DIR=opensuse/12
+  PKG=suse
+elif egrep -q "openSUSE 13" $RELEASE ; then
+  DIST="suse13"
+  DIR=opensuse/13
+  PKG=suse
+elif egrep -q "^6.0" $RELEASE ; then
+  DIST="debian"
+  DIR="squeeze"
+  PKG=deb
+elif egrep -q "wheezy" $RELEASE ; then
+  DIR="wheezy"
+  DIST="debian"
+  PKG=deb
+elif egrep -q "jessie" $RELEASE ; then
+  DIR="jessie"
+  DIST="debian"
+  PKG=deb
+elif egrep -q "stretch" $RELEASE ; then
+  DIR="stretch"
+  DIST="debian"
+  PKG=deb
+elif egrep -q "buster" $RELEASE ; then
+  DIR="buster"
+  DIST="debian"
+  PKG=deb
+elif egrep -q "lucid" $RELEASE ; then
+  DIR="lucid"
+  DIST="ubuntu"
+  PKG=deb
+elif egrep -q "precise" $RELEASE ; then
+  DIR="precise"
+  DIST="ubuntu"
+  PKG=deb
+elif egrep -q "Raring Ringtail" $RELEASE ; then
+  DIR="raring"
+  DIST="ubuntu"
+  PKG=deb
+elif egrep -q "Trusty Tahr" $RELEASE ; then
+  DIR="trusty"
+  DIST="ubuntu"
+  PKG=deb
+elif egrep -q "Xenial" $RELEASE ; then
+  DIR="xenial"
+  DIST="ubuntu"
+  PKG=deb
+elif egrep -q "Bionic" $RELEASE ; then
+  DIR="bionic"
+  DIST="ubuntu"
+  PKG=deb
+elif egrep -q "Focal" $RELEASE ; then
+  DIR="focal"
+  DIST="ubuntu"
+  PKG=deb2
+elif egrep -q "Jammy" $RELEASE ; then
+  DIR="jammy"
+  DIST="ubuntu"
+  PKG=deb2
+else
+  #this else has been modified based on the issue info. It now shows the support os for oum.
+  echo -e "Error: Unable to determine distribution type.\n" | tee -a $LOG
+  echo -e "Supported distributions for OSSEC+\n----------------------------\n" | tee -a $LOG
+  echo -e "CentOS7\nRocky Linux 8\nRedHat Enterprise Linux 7 and 8\nUbuntu 18 and 20\n" | tee -a $LOG
+  echo -e "If you believe this message was received in error or to register interest in additional distribution support, Please send the contents of /etc/os-release to support@atomicorp.com" | tee -a $LOG
+  exit 1
+fi
+
+yum_install () {
+  ATOMIC=atomic-release-$VERSION.$DIST.art.noarch.rpm
+
+  if [ ! -f /usr/bin/yum ]; then
+    echo
+    echo "Error: Yum was not detected. Contact your provider for support." | tee -a $LOG
+    echo
+    exit 1
+  else
+    YUM=1
+  fi
+
+  ## yum, make sure yum is up to date
+  echo -n "Ensuring yum is up to date: " | tee -a $LOG
+  /usr/bin/yum -y upgrade yum >> $LOG 2>&1
+  echo "Done" | tee -a $LOG
+
+  if rpm -q atomic-release > /dev/null ; then
+    if [ ! -f /etc/yum.repos.d/atomic.repo ]; then
+      rpm -e atomic-release
+    fi
+
+  fi
+
+  rpm -import RPM-GPG-KEY.art.txt >/dev/null 2>&1
+  rpm -import RPM-GPG-KEY.atomicorp.txt >/dev/null 2>&1
+
+
+  echo -n "Downloading $ATOMIC: "
+  wget -q http://$SERVER/channels/atomic/$DIR/$ARCH/RPMS/$ATOMIC >/dev/null 2>&1
+  if [ $? -ne 0 ]; then
+    echo "Error: File $ATOMIC not found."
+    echo
+    exit
+  fi
+
+  if [ -f $ATOMIC ]; then
+      rpm -Uvh $ATOMIC
+      rm -f $ATOMIC
+  else
+      echo "ERROR: $ATOMIC was not downloaded."
+      exit 1
+  fi
+
+  echo "OK"
+
+  if [ ! -f /etc/yum.repos.d/atomic.repo ]; then
+    echo "Error: /etc/yum.repos.d/atomic.repo was not detected."
+    exit 1
+  fi
+
+  yum --enablerepo=atomic  -y install oum | tee -a $LOG
+
+}
+
+
+# DEB Distros
+apt_install () {
+
+  /usr/bin/apt-get update
+
+  /usr/bin/apt-get -y --force-yes install gpg
+
+  wget -O -  https://www.atomicorp.com/RPM-GPG-KEY.atomicorp.txt | apt-key add -
+  if [ $? -ne 0 ]; then
+    echo
+    echo "Error: Installation failed"
+    echo
+    exit 1
+  fi
+
+
+  if [ -d /etc/apt/sources.list.d/ ]; then
+    APT_SOURCES="/etc/apt/sources.list.d/atomic.list"
+
+    echo -n "Adding [atomic] to $APT_SOURCES: "
+    if [ ! -f $APT_SOURCES ]; then
+      echo "deb https://updates.atomicorp.com/channels/atomic/$DIST $DIR main" > $APT_SOURCES
+      echo "OK"
+    else
+      echo "Already installed"
+    fi
+
+  else
+    APT_SOURCES="/etc/apt/sources.list"
+    echo -n "Adding [atomic] to $APT_SOURCES: "
+    if ! grep -q "atomic/$DIST $DIR" $APT_SOURCES ; then
+      echo "deb https://updates.atomicorp.com/channels/atomic/$DIST $DIR main" >> /etc/apt/sources.list
+      echo "OK"
+    else
+      echo "Already installed"
+    fi
+  fi
+
+  /usr/bin/apt update && /usr/bin/apt -y install oum
+  if [ $? -ne 0 ]; then
+    echo
+    echo "Error: apt installation failed"
+    echo
+    exit 1
+  fi
+
+
+}
+
+apt_install_2 () {
+        APT_SOURCES="/etc/apt/sources.list.d/atomic.list"
+        ARCH=$(dpkg --print-architecture)
+
+        # GPG dependency
+        if [ ! -f /usr/bin/gpg ]; then
+                /usr/bin/apt-get update
+                /usr/bin/apt-get -y --force-yes install gpg
+        fi
+        wget -O -  https://www.atomicorp.com/RPM-GPG-KEY.atomicorp.txt | apt-key add -
+        if [ $? -ne 0 ]; then
+                echo
+                echo "Error: Installation failed"
+                echo
+                exit 1
+        fi
+
+        echo -n "Adding [atomic] to $APT_SOURCES: "
+        echo "deb [trusted=yes] https://updates.atomicorp.com/channels/atomic/${DIST} ${DIR}/${ARCH}/ " > $APT_SOURCES
+        echo "OK"
+
+  /usr/bin/apt update && /usr/bin/apt -y install oum
+  if [ $? -ne 0 ]; then
+    echo
+    echo "Error: apt installation failed"
+    echo
+    exit 1
+  fi
+
+
+
+}
+
+
+
+# GPG Keys
+echo -n "Installing the Atomic GPG keys: "
+if [ ! -f RPM-GPG-KEY.art.txt ]; then
+  wget -q https://www.atomicorp.com/RPM-GPG-KEY.art.txt 1>/dev/null 2>&1
+fi
+
+if [ ! -f RPM-GPG-KEY.atomicorp.txt ]; then
+  wget -q https://www.atomicorp.com/RPM-GPG-KEY.atomicorp.txt 1>/dev/null 2>&1
+fi
+echo "OK"
+echo
+
+if [ "$PKG" == "rpm" ]; then
+  yum_install
+elif [ "$PKG" == "deb" ]; then
+  apt_install
+elif [ "$PKG" == "deb2" ]; then
+  apt_install_2
+fi
+
+
+echo "install finished" >> $LOG
+echo
+echo "To complete installation run:"
+echo "	oum configure"
+echo
+echo "and to update your rules:"
+echo "	oum update"
+echo
+echo
